@@ -1,0 +1,202 @@
+import numpy as np
+import random
+import matplotlib.pyplot as plt
+from matplotlib.animation import FuncAnimation
+
+
+class Stick:
+    def __init__(self, pos, angle, length=2, born_at=0, initial_alpha=1):
+        self.pos = np.array(pos)
+        self.angle = angle
+        self.length = length
+        self.alpha = initial_alpha
+        self.born_at = born_at
+        self.update_endpoints()
+        self.merge_progress = 0
+        self.initial_speed = random.uniform(20 / 20, 1 / 20)  # 初速を20/フレーム～1/フレームの間でランダムに設定
+        self.speed_decay = self.initial_speed / 20  # 20フレームで速度がゼロになるように減速
+
+    def update_endpoints(self):
+        half_length = self.length / 2
+        self.p_pos = self.pos + np.array([np.cos(self.angle) * half_length, np.sin(self.angle) * half_length])
+        self.n_pos = self.pos - np.array([np.cos(self.angle) * half_length, np.sin(self.angle) * half_length])
+
+    def rotate(self, angle):
+        self.angle += angle
+        self.update_endpoints()
+
+    def update_position(self, delta):
+        self.pos += delta
+        self.update_endpoints()
+
+def generate_angle_within_ranges(ranges):
+    while True:
+        angle = np.random.uniform(0, 2 * np.pi)
+        for r in ranges:
+            if r[0] <= angle <= r[1]:
+                return angle
+
+def create_random_sticks(num_sticks, field_size_x, field_size_y, born_at=None):
+    if born_at is None:
+        born_at = -4
+    sticks = []
+    angle_ranges = [(0, 1), (1, 6.28319)]
+    for _ in range(num_sticks):
+        pos = np.random.uniform([5, 0], [5, field_size_y], size=(2,))
+        angle = generate_angle_within_ranges(angle_ranges)
+        initial_alpha = 0 if born_at == 0 else 1
+        sticks.append(Stick(pos, angle, born_at=born_at, initial_alpha=initial_alpha))
+    return sticks
+
+
+def check_and_merge_sticks(sticks, merge_duration, frame):
+    i = 0
+    while i < len(sticks):
+        merged = False
+        for j in range(i + 1, len(sticks)):
+            if np.linalg.norm(sticks[i].p_pos - sticks[j].n_pos) < 0.5 or np.linalg.norm(sticks[i].n_pos - sticks[j].p_pos) < 0.5: # 0.5以下でくっつき判定
+                if (sticks[i], sticks[j]) not in merge_duration:
+                    merge_duration[(sticks[i], sticks[j])] = 10  # 10フレームで完全にマージ
+
+                if merge_duration[(sticks[i], sticks[j])] > 0:
+                    merge_duration[(sticks[i], sticks[j])] -= 1
+                    merged = True
+                else:
+                    del merge_duration[(sticks[i], sticks[j])]
+                    longer_stick, shorter_stick = (sticks[i], sticks[j]) if sticks[i].length > sticks[j].length else (sticks[j], sticks[i])
+                    longer_stick.length += shorter_stick.length
+                    longer_stick.p_pos = shorter_stick.p_pos
+                    longer_stick.update_endpoints()
+                    sticks.remove(shorter_stick)
+                    merged = True
+
+                if merged:
+                    break
+        if not merged:
+            i += 1
+
+    return sticks
+
+def check_crossing(stick1, stick2):
+        s1, e1 = stick1.n_pos, stick1.p_pos
+        s2, e2 = stick2.n_pos, stick2.p_pos
+    
+        d1 = e1 - s1
+        d2 = e2 - s2
+        denom = np.cross(d1, d2)
+    
+        if denom == 0:
+            return False
+    
+        t = np.cross(s2 - s1, d2) / denom
+        u = np.cross(s2 - s1, d1) / denom
+    
+        return (0 <= t <= 1) and (0 <= u <= 1)
+    
+def angle_between_sticks(stick1, stick2):
+        angle_diff = abs(stick1.angle - stick2.angle)
+        return min(angle_diff, 2 * np.pi - angle_diff)
+    
+def process_crossing_sticks(sticks):
+        crossing_stick_pairs = []
+        for i in range(len(sticks)):
+            for j in range(i + 1, len(sticks)):
+                if sticks[i].length >= 4 and sticks[j].length >= 4 and check_crossing(sticks[i], sticks[j]):
+                    angle = np.rad2deg(angle_between_sticks(sticks[i], sticks[j]))
+                    if angle <= 10 or angle >= 170:
+                        crossing_stick_pairs.append((sticks[i], sticks[j]))
+    
+        return crossing_stick_pairs
+    
+def update(frame, sticks, field_size_x, field_size_y, ax, crossing_duration, merge_duration, fps):
+
+    ax.clear()
+    ax.set_xlim(0, field_size_x)
+    ax.set_ylim(0, field_size_y)
+
+    ax.set_aspect('equal', adjustable='box')
+        
+    crossing_stick_pairs = process_crossing_sticks(sticks)
+    
+    for stick_pair in crossing_stick_pairs:
+            stick1, stick2 = stick_pair
+            if stick_pair not in crossing_duration:
+                crossing_duration[stick_pair] = 3 * 30  # 3秒間、1秒あたり30フレーム
+    
+            if crossing_duration[stick_pair] > 0:
+         # 角度を長い棒に従うように変更、または長さが同じ場合は角度の平均を指定
+                if stick1.length > stick2.length:
+                    target_angle = stick1.angle
+                elif stick1.length < stick2.length:
+                    target_angle = stick2.angle
+                else:
+                    angle_diff = abs(stick1.angle - stick2.angle)
+                    min_angle_diff = min(angle_diff, 2 * np.pi - angle_diff)
+                    target_angle = min(stick1.angle, stick2.angle) + min_angle_diff / 2
+
+                stick1.angle = target_angle
+                stick2.angle = target_angle
+                stick1.update_endpoints()
+                stick2.update_endpoints()
+                crossing_duration[stick_pair] -= 1
+    
+    for stick in sticks:
+        if not any(stick in stick_pair for stick_pair in crossing_stick_pairs):
+            # 回転速度を棒の長さに反比例させる
+            stick.rotate(random.uniform(-0.1, 0.1) / stick.length)
+             # X軸方向の移動速度を棒の初速と減速に基づいて計算
+            dx = max(0, stick.initial_speed - stick.born_at * stick.speed_decay) / stick.length
+            dy = random.uniform(-0.5, 0.5) / stick.length
+            new_pos = stick.pos + np.array([dx, dy])
+            if 0 <= new_pos[0] < field_size_x and 0 <= new_pos[1] < field_size_y:stick.update_position(np.array([dx, dy]))
+
+    sticks = check_and_merge_sticks(sticks, merge_duration, frame)
+    # 棒が画面外に出たかどうかを判断し、画面外に出たらリストから削除
+ 
+
+
+        # 200本の棒が常にあるように調整する
+    angle_ranges = [(0, np.pi), (np.pi, 2 * np.pi)]  # 新しく生まれる棒にも角度指定
+    while len(sticks) < 200:
+        new_sticks = create_random_sticks(1, field_size_x, field_size_y, born_at=frame)
+        sticks.extend(new_sticks)
+
+
+    sticks = [stick for stick in sticks if 0 <= stick.pos[0] <= field_size_x and 0 <= stick.pos[1] <= field_size_y]
+
+    for stick in sticks:
+        alpha_increment = 1 / 10  # 透明度を10フレームで100%に達させるための増分
+        alpha = min(1, (frame - stick.born_at) * alpha_increment)
+                                                                     # 2秒間で0%から100%へ
+        stick.alpha = alpha
+
+
+        ax.plot([stick.n_pos[0], stick.p_pos[0]], [stick.n_pos[1], stick.p_pos[1]], 'b-', alpha=alpha)
+        ax.plot(stick.p_pos[0], stick.p_pos[1], 'ro', markersize=2 * 2, alpha=alpha)
+        ax.plot(stick.n_pos[0], stick.n_pos[1], 'go', markersize=2 * 2, alpha=alpha)
+
+
+    return ax.patches
+
+
+def main(field_size_x=50, field_size_y=50):  # デフォルトのフィールドサイズは50x50
+    num_sticks = 200
+    sticks = create_random_sticks(num_sticks, field_size_x, field_size_y)
+    merge_duration = {}
+
+    fig, ax = plt.subplots()
+    ax.set_xlim(0, field_size_x)
+    ax.set_ylim(0, field_size_y)
+
+    crossing_duration = {}
+
+    duration = 60  # seconds
+    fps = 60
+    frames = duration * fps
+
+    anim = FuncAnimation(fig, update, frames=frames, fargs=(sticks, field_size_x, field_size_y, ax, crossing_duration, merge_duration, fps), interval=1000/fps, blit=True)
+
+    plt.show()
+
+if __name__ == '__main__':
+    main(50, 50)  # フィールドサイズを50x50に変更
